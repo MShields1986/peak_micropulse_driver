@@ -2,7 +2,7 @@
 A C++ driver to handle external control of the Peak MicroPulse hardware range over TCP.
 
 # Including in an External Project
-Use the inclusions below to have CMake fetch and build the linrary for you.
+Use the inclusions below to have CMake fetch and build the library for you.
 ```cmake
 include(FetchContent)
 FetchContent_Declare(
@@ -15,7 +15,7 @@ FetchContent_MakeAvailable(peak_micropulse)
 
 Then link against your intended compilation target.
 ```cmake
-target_link_libraries(${LIBRARY_NAME} PeakMicroPulseHandler)
+target_link_libraries(${TARGET_NAME} PeakMicroPulseHandler)
 ```
 
 # Usage
