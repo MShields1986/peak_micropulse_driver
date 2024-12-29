@@ -66,7 +66,7 @@ auto main(int argc, char** argv) -> int
 Data is output as a OutputFormat struct, which is defined in [peak_handler.h](https://github.com/MShields1986/peak_micropulse_driver/blob/main/peak_micropulse/include/PeakMicroPulseHandler/peak_handler.h). It would be worthwhile familiarising yourself with the Peak data output messages as defined in the [reference documentation](https://github.com/MShields1986/peak_micropulse_driver/blob/main/refs/PNL_1267_Issue_1_02_MicroPulse_Range_MP6_Command_Reference_Manual.pdf) to better understand these fields.
 
 ```cpp
-// Output data structures: made to stay close to the LTPA DOF message
+// Output data structures: made to stay close to the Peak DOF message
     enum DofHeaderByte {
         ascan,                         // 1A Hex
         normal_indications,            // 1C Hex
