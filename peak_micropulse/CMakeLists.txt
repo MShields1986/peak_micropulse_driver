@@ -10,7 +10,7 @@ include(FetchContent)
 FetchContent_Declare(
   simple_boost_asio_sockets
   GIT_REPOSITORY https://github.com/MShields1986/boost_asio_socket_wrappers
-  GIT_TAG        main
+  GIT_TAG        feature/nodelet_compatibility
 )
 FetchContent_MakeAvailable(simple_boost_asio_sockets)
 

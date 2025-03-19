@@ -2,28 +2,34 @@
 
 
 
-PeakHandler::PeakHandler(
-        const int& frequency,
-        const std::string& ip_address,
-        const int& port,
-        const std::string& mps_file)
+PeakHandler::PeakHandler()
     :  ltpa_data_(), ltpa_data_ptr_(&ltpa_data_),
        sub_header_size_(8),
-       frequency_(frequency),
-
-       // LTPA TCP Client
-       ip_address_(ip_address),
-       port_(port),
-       ltpa_client_(ip_address_, port_),
-
-       // LTPA Configuration
-       mps_file_(mps_file)
+       ltpa_client_()
 {
 }
 
 
 PeakHandler::~PeakHandler() {
     ltpa_client_.~TcpClientBoost();
+}
+
+
+void PeakHandler::setup(const int& frequency,
+                        const std::string& ip_address,
+                        const int& port,
+                        const std::string& mps_file)
+
+{
+    frequency_ = frequency;
+
+    // Micropulse Hardware TCP Client
+    ip_address_ = ip_address;
+    port_ = port;
+    ltpa_client_.setup(ip_address_, port_);
+
+    // Micropulse Configuration
+    mps_file_ = mps_file;
 }
 
 
@@ -81,6 +87,7 @@ void PeakHandler::readMpsFile() {
     while(std::getline(file, line))
     {
         // TODO: May need to trim leading and trailing whitespace here and ignore comments?
+        // UTF-8 and strip white space
         commands_.push_back(line);
 
         // TODO: Consider parsing the NUM directive
@@ -172,7 +179,7 @@ void PeakHandler::calcPacketLength() {
     // TODO: Implememnt DOF 2, 3, 5 & 6
 
     } else {
-        errorToConsole("ERROR - Unkown DOF in .mps file: " + std::to_string(dof_));
+        errorToConsole("ERROR - Unknown DOF in .mps file: " + std::to_string(dof_));
     }
 
     packet_length_ = num_a_scans_ * individual_ascan_obs_length_;
@@ -182,10 +189,9 @@ void PeakHandler::calcPacketLength() {
 }
 
 
-void PeakHandler::connect(int digitisation_rate/* = 0*/) {
+void PeakHandler::connect() {
     logToConsole("Connecting to LTPA at " + ip_address_);
     ltpa_client_.connect();
-    sendReset(digitisation_rate);
 }
 
 
@@ -278,33 +284,23 @@ auto PeakHandler::dataOutpoutFormatReader(const std::vector<unsigned char>& pack
         data.header.testNo =        (int)(packet[5] << 8 | packet[4]);
         data.header.dof =           (int)packet[6];
         data.header.channel =       (int)packet[7];
-        //data.amps.clear();
-
-        // TODO: Remove debug outputs after testing
-        //logToConsole("--------=== New A-Scan ===--------");
-        //logToConsole("A-Scan length: " + std::to_string(data.header.count));
-        //logToConsole("Test number: " + std::to_string(data.header.testNo));
-        //logToConsole("DOF: " + std::to_string(data.header.dof));
-        //logToConsole("Channel: " + std::to_string(data.header.channel));
 
         // 8 Bit Mode
         if (data.header.dof == 1) {
-        //if (dof_ == 1) {
             for (int i = sub_header_size_; i < data.header.count; i++) {
-                data.amps.push_back((short int)packet[i]);
+                data.amps.push_back( (int32_t)packet[i] - 128 );
             }
-
-        // TODO: Implememnt DOF 2, 3, 5 & 6
 
         // 16 Bit Mode
         } else if (data.header.dof == 4) {
-        //} else if (dof_ == 4) {
             int i = sub_header_size_;
             while (i < data.header.count) {
-                // TODO: Confirm the byte order here
-                data.amps.push_back((short int)(packet[i+1] << 8 | packet[i]));
+                data.amps.push_back( (int32_t)(packet[i+1] << 8 | packet[i]) - 32768 );
                 i = i+2;
             }
+        } else {
+        // TODO: Implememnt DOF 2, 3, 5 & 6
+            errorToConsole("ERROR - Unkown DOF packet sub-header byte: " + std::to_string( data.header.dof ));
         }
 
     } else if (packet.front() == 28) {
@@ -328,14 +324,13 @@ auto PeakHandler::dataOutpoutFormatReader(const std::vector<unsigned char>& pack
         // TODO: Implement better error message return handling
 
     } else {
-        errorToConsole("ERROR - Unkown DOF packet sub-header byte: "+ std::to_string((int)packet.front()));
+        errorToConsole("ERROR - Unkown DOF packet sub-header byte: " + std::to_string((int)packet.front()));
         // TODO: Subheader processing to separate method
         data.header.header =        error;
         data.header.count =         (int)((packet[3] << 16) | (packet[2] << 8) | packet[1]);
         data.header.testNo =        (int)(packet[5] << 8 | packet[4]);
         data.header.dof =           (int)packet[6];
         data.header.channel =       (int)packet[7];
-        //data.amps.clear();
     }
 
     return data;
@@ -345,7 +340,8 @@ auto PeakHandler::dataOutpoutFormatReader(const std::vector<unsigned char>& pack
 bool PeakHandler::sendDataRequest() {
     bool valid = false;
 
-    // TODO: Get a handle on the behavior of these different commands and what is best for streaming and single measurements
+    // TODO: Get a handle on the behavior of these different commands
+    //       and which is best for streaming and single measurements
     sendCommand("CALS 1");
     //sendCommand("STR 1");
     //sendCommand("STP 1");
@@ -353,19 +349,24 @@ bool PeakHandler::sendDataRequest() {
     //sendCommand("STR 0");
     //sendCommand("STP 0");
 
+    auto begin = std::chrono::high_resolution_clock::now();
     std::vector<unsigned char> response = ltpa_client_.receive(packet_length_);
-    //std::vector<unsigned char> response = ltpa_client_.receive(packet_length_ + 200);
-    //std::vector<unsigned char> response = ltpa_client_.receive(179436);
+    auto end = std::chrono::high_resolution_clock::now();
+    std::cout << "\033[32m";
+    std::cout << "Profiling [ltpa_client_.receive(packet_length_)] --- " << std::chrono::duration_cast<std::chrono::microseconds>(end-begin).count() << " us" << std::endl;
+    std::cout << "\033[0m";
 
     int ascan_count = 0;
     int curr_ascan_i = 0;
+
+    int32_t data_max_amp = 0;
+
     std::vector<DofMessage> data(num_a_scans_);
     data.clear();
     data.reserve(num_a_scans_);
 
     while (curr_ascan_i < packet_length_) {
         //logToConsole("Current a-scan start index: " + std::to_string(curr_ascan_i));
-
         std::vector<unsigned char> ascan_bytes(
             &response[curr_ascan_i],
             &response[curr_ascan_i + individual_ascan_obs_length_]
@@ -375,6 +376,7 @@ bool PeakHandler::sendDataRequest() {
 
         if (message.header.header == ascan) {
             // TODO: Consider separate ascan validation method to hold all this logic
+            // DoF Validation
             if (message.header.dof != dof_) {
                 errorToConsole(
                     "ERROR - Returned DOF [" + 
@@ -383,9 +385,8 @@ bool PeakHandler::sendDataRequest() {
                     std::to_string(dof_) + 
                     "]"
                     );
-
                 break;
-
+            // Packet Length Validation
             } else if (message.header.count != individual_ascan_obs_length_) {
                 errorToConsole(
                     "ERROR - Returned A-Scan length [" + 
@@ -394,13 +395,26 @@ bool PeakHandler::sendDataRequest() {
                     std::to_string(individual_ascan_obs_length_) + 
                     "]"
                     );
-
                 break;
-            }
 
-            data.push_back(message);
-            ++ascan_count;
-            //ascan_count++;
+            // We have a good packet
+            } else {
+                int32_t curr_ascan_min_amp = *std::min_element(message.amps.begin(), message.amps.end());
+                int32_t curr_ascan_max_amp = *std::max_element(message.amps.begin(), message.amps.end());
+
+                if (abs(curr_ascan_min_amp) > abs(curr_ascan_max_amp)) {
+                        curr_ascan_max_amp = abs(curr_ascan_min_amp);
+                    } else {
+                        curr_ascan_max_amp = abs(curr_ascan_max_amp);
+                    }
+
+                if (data_max_amp < curr_ascan_max_amp) {
+                    data_max_amp = curr_ascan_max_amp;
+                }
+
+                data.push_back(message);
+                ++ascan_count;
+            }
 
         } else {
             errorToConsole("ERROR - Returned data message not an A Scan");
@@ -413,10 +427,9 @@ bool PeakHandler::sendDataRequest() {
     logToConsole(std::to_string(ascan_count) + " A-Scans Received");
 
     if (ascan_count == num_a_scans_) {
-    //if (ascan_count == 113) {
         ltpa_data_.ascans.clear();
-        //ltpa_data_.ascans.reserve(num_a_scans_);
         ltpa_data_.ascans = data;
+        ltpa_data_.max_amplitude = data_max_amp;
 
         valid = true;
     } else {

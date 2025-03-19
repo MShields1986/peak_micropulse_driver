@@ -38,7 +38,9 @@ The implementation within the example is as follows and provides a template for 
 auto main(int argc, char** argv) -> int
 {
     
-    PeakHandler peak_handler(
+    PeakHandler peak_handler;
+
+    peak_handler.setup(
         10,                                // Frequency -- Currently not used!
         "10.1.1.2",                        // IP address
         1067,                              // Port

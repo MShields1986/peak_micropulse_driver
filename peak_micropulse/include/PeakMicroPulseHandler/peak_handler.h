@@ -3,6 +3,7 @@
 #include <iostream>
 #include <fstream>
 #include <vector>
+#include <algorithm>
 
 #include <BoostSocketWrappers/tcp_client_boost.h>
 
@@ -10,13 +11,13 @@
 
 class PeakHandler {
 public:
-    PeakHandler(
-        const int& frequency,
-        const std::string& ip_address,
-        const int& port,
-        const std::string& mps_file);
+    explicit PeakHandler();
     ~PeakHandler();
 
+    void                              setup(const int& frequency,
+                                            const std::string& ip_address,
+                                            const int& port,
+                                            const std::string& mps_file);
 
     void                               logToConsole(const std::string& message);
     void                               errorToConsole(const std::string& message);
@@ -39,7 +40,7 @@ public:
     void                               setNumAScans(const std::string& command);
     void                               calcPacketLength();
 
-    void                               connect(int digitisation_rate = 0);
+    void                               connect();
     void                               sendCommand(const std::string& command);
     void                               sendReset(int digitisation_rate);
     void                               sendMpsConfiguration();
@@ -66,7 +67,7 @@ public:
 
     struct DofMessage {
         DofMessageHeader               header;
-        std::vector<short int>         amps;
+        std::vector<int32_t>           amps;
     };
 
     struct OutputFormat {
@@ -85,10 +86,11 @@ public:
         double                         couplant_depth;        // mm
         double                         specimen_depth;        // mm
         std::vector<DofMessage>        ascans;
+        int32_t                        max_amplitude;
     };
 
 private:
-    // TODO: Consider using a mutex or atomic here to avoid a race condition
+    // TODO: Consider using a mutex or atomic or futures here to avoid a race condition
     OutputFormat                       ltpa_data_;
     OutputFormat*                      ltpa_data_ptr_;
 public:
@@ -96,11 +98,11 @@ public:
 
 private:
     const int                                  sub_header_size_;
-    const int                                  frequency_;
-    const std::string                          ip_address_;
-    const int                                  port_;
+    int                                        frequency_;
+    std::string                                ip_address_;
+    int                                        port_;
     BoostSocketWrappers::TcpClientBoost        ltpa_client_;
-    const std::string                          mps_file_;
+    std::string                                mps_file_;
     std::vector<std::string>                   commands_;
 
 public:
