@@ -106,3 +106,8 @@ Data is output as a OutputFormat struct, which is defined in [peak_handler.h](ht
         std::vector<DofMessage>        ascans;
     };
 ```
+
+## Funding
+The authors acknowledge the support of:
+- RCSRF1920/10/32; Spirit Aerosystems/Royal Academy of Engineering Research Chair “In-process Non-destructive Testing for Aerospace Structures”
+- Research Centre for Non-Destructive Evaluation Technology Transfer Project Scheme
