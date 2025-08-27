@@ -106,3 +106,11 @@ Data is output as a OutputFormat struct, which is defined in [peak_handler.h](ht
         std::vector<DofMessage>        ascans;
     };
 ```
+
+## Bugs and Feature Requests
+Please report bugs and request features using the [Issue Tracker](https://github.com/MShields1986/peak_micropulse_driver/issues).
+
+## Funding
+The authors acknowledge the support of:
+- RCSRF1920/10/32; Spirit Aerosystems/Royal Academy of Engineering Research Chair “In-process Non-destructive Testing for Aerospace Structures”
+- Research Centre for Non-Destructive Evaluation Technology Transfer Project Scheme
