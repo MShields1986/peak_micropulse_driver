@@ -87,7 +87,7 @@ Data is output as a OutputFormat struct, which is defined in [peak_handler.h](ht
 
     struct DofMessage {
         DofMessageHeader               header;
-        std::vector<short int>         amps;
+        std::vector<int32_t>           amps;
     };
 
     struct OutputFormat {
@@ -106,5 +106,14 @@ Data is output as a OutputFormat struct, which is defined in [peak_handler.h](ht
         double                         couplant_depth;        // mm
         double                         specimen_depth;        // mm
         std::vector<DofMessage>        ascans;
+        int32_t                        max_amplitude;
     };
+```
+
+# Tests
+Unit tests use [Google Test](https://github.com/google/googletest) and have no ROS dependency. To build and run them...
+```bash
+cmake -DBUILD_PeakMicroPulse_TESTS=ON -S . -B build/
+cmake --build build/
+ctest --test-dir build/ --output-on-failure
 ```

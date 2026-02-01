@@ -4,6 +4,9 @@
 #include <fstream>
 #include <vector>
 #include <algorithm>
+#include <mutex>
+#include <atomic>
+#include <functional>
 
 #include <BoostSocketWrappers/tcp_client_boost.h>
 
@@ -11,43 +14,6 @@
 
 class PeakHandler {
 public:
-    explicit PeakHandler();
-    ~PeakHandler();
-
-    void                              setup(const int& frequency,
-                                            const std::string& ip_address,
-                                            const int& port,
-                                            const std::string& mps_file);
-
-    void                               logToConsole(const std::string& message);
-    void                               errorToConsole(const std::string& message);
-    void                               setReconstructionConfiguration(
-                                                        const int& n_elements,
-                                                        const double& element_pitch,         // mm
-                                                        const double& inter_element_spacing, // mm
-                                                        const double& element_width,         // mm
-                                                        const double& vel_wedge,             // m/s
-                                                        const double& vel_couplant,          // m/s
-                                                        const double& vel_material,          // m/s
-                                                        const double& wedge_angle,           // degrees
-                                                        const double& wedge_depth,           // mm
-                                                        const double& specimen_depth,        // mm
-                                                        const double& couplant_depth);       // mm
-    void                               readMpsFile();
-    std::vector<std::string>           processMpsLine(const std::string& command);
-    void                               setDof(const std::string& command);
-    void                               setGates(const std::string& command);
-    void                               setNumAScans(const std::string& command);
-    void                               calcPacketLength();
-
-    void                               connect();
-    void                               sendCommand(const std::string& command);
-    void                               sendReset(int digitisation_rate);
-    void                               sendMpsConfiguration();
-    auto                               dataOutpoutFormatReader(const std::vector<unsigned char>& packet);
-    bool                               sendDataRequest();
-
-
 // Output data structures: made to stay close to the LTPA DOF message
     enum DofHeaderByte {
         ascan,                         // 1A Hex
@@ -89,8 +55,58 @@ public:
         int32_t                        max_amplitude;
     };
 
+    explicit PeakHandler();
+    ~PeakHandler();
+
+    void                              setup(const int& frequency,
+                                            const std::string& ip_address,
+                                            const int& port,
+                                            const std::string& mps_file);
+
+    void                               logToConsole(const std::string& message);
+    void                               errorToConsole(const std::string& message);
+    void                               setReconstructionConfiguration(
+                                                        const int& n_elements,
+                                                        const double& element_pitch,         // mm
+                                                        const double& inter_element_spacing, // mm
+                                                        const double& element_width,         // mm
+                                                        const double& vel_wedge,             // m/s
+                                                        const double& vel_couplant,          // m/s
+                                                        const double& vel_material,          // m/s
+                                                        const double& wedge_angle,           // degrees
+                                                        const double& wedge_depth,           // mm
+                                                        const double& specimen_depth,        // mm
+                                                        const double& couplant_depth);       // mm
+    void                               readMpsFile();
+    std::vector<std::string>           processMpsLine(const std::string& command);
+    void                               setDof(const std::string& command);
+    void                               setGates(const std::string& command);
+    void                               setNumAScans(const std::string& command);
+    void                               calcPacketLength();
+
+    void                               connect();
+    void                               sendCommand(const std::string& command);
+    void                               sendReset(int digitisation_rate);
+    void                               sendMpsConfiguration();
+    DofMessage                         dataOutpoutFormatReader(const std::vector<unsigned char>& packet);
+    bool                               sendDataRequest();
+
+    // Async acquisition API
+    using DataReadyCallback = std::function<void(bool)>;
+    void                               startAsyncAcquisition(DataReadyCallback on_data_ready = nullptr);
+    void                               stopAsyncAcquisition();
+    bool                               getLatestData(OutputFormat& out);
+
 private:
-    // TODO: Consider using a mutex or atomic or futures here to avoid a race condition
+    friend class PeakHandlerTest;
+
+    // Parse raw response bytes into an OutputFormat struct
+    bool                               parseResponse(const std::vector<unsigned char>& response, OutputFormat& output);
+
+    // Async loop internals
+    void                               initiateAsyncRequest();
+    void                               onReceiveComplete(std::vector<unsigned char> data, boost::system::error_code ec);
+
     OutputFormat                       ltpa_data_;
     OutputFormat*                      ltpa_data_ptr_;
 public:
@@ -116,4 +132,10 @@ private:
     int                                individual_ascan_obs_length_;
     int                                packet_length_;
 
+    // Async double-buffer members
+    mutable std::mutex                 data_mutex_;
+    OutputFormat                       ready_buffer_;
+    std::atomic<bool>                  data_ready_{false};
+    std::atomic<bool>                  acquiring_{false};
+    DataReadyCallback                  data_ready_cb_;
 };

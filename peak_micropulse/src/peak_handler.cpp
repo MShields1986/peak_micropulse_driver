@@ -11,7 +11,7 @@ PeakHandler::PeakHandler()
 
 
 PeakHandler::~PeakHandler() {
-    ltpa_client_.~TcpClientBoost();
+    stopAsyncAcquisition();
 }
 
 
@@ -274,7 +274,7 @@ void PeakHandler::sendMpsConfiguration() {
 }
 
 
-auto PeakHandler::dataOutpoutFormatReader(const std::vector<unsigned char>& packet) {
+PeakHandler::DofMessage PeakHandler::dataOutpoutFormatReader(const std::vector<unsigned char>& packet) {
     DofMessage data;
 
     if (packet.front() == 26) {
@@ -337,36 +337,16 @@ auto PeakHandler::dataOutpoutFormatReader(const std::vector<unsigned char>& pack
 }
 
 
-bool PeakHandler::sendDataRequest() {
-    bool valid = false;
-
-    // TODO: Get a handle on the behavior of these different commands
-    //       and which is best for streaming and single measurements
-    sendCommand("CALS 1");
-    //sendCommand("STR 1");
-    //sendCommand("STP 1");
-    //sendCommand("CALS 0");
-    //sendCommand("STR 0");
-    //sendCommand("STP 0");
-
-    auto begin = std::chrono::high_resolution_clock::now();
-    std::vector<unsigned char> response = ltpa_client_.receive(packet_length_);
-    auto end = std::chrono::high_resolution_clock::now();
-    std::cout << "\033[32m";
-    std::cout << "Profiling [ltpa_client_.receive(packet_length_)] --- " << std::chrono::duration_cast<std::chrono::microseconds>(end-begin).count() << " us" << std::endl;
-    std::cout << "\033[0m";
-
+bool PeakHandler::parseResponse(const std::vector<unsigned char>& response, OutputFormat& output) {
     int ascan_count = 0;
     int curr_ascan_i = 0;
 
     int32_t data_max_amp = 0;
 
-    std::vector<DofMessage> data(num_a_scans_);
-    data.clear();
+    std::vector<DofMessage> data;
     data.reserve(num_a_scans_);
 
     while (curr_ascan_i < packet_length_) {
-        //logToConsole("Current a-scan start index: " + std::to_string(curr_ascan_i));
         std::vector<unsigned char> ascan_bytes(
             &response[curr_ascan_i],
             &response[curr_ascan_i + individual_ascan_obs_length_]
@@ -375,24 +355,23 @@ bool PeakHandler::sendDataRequest() {
         DofMessage message = dataOutpoutFormatReader(ascan_bytes);
 
         if (message.header.header == ascan) {
-            // TODO: Consider separate ascan validation method to hold all this logic
             // DoF Validation
             if (message.header.dof != dof_) {
                 errorToConsole(
-                    "ERROR - Returned DOF [" + 
-                    std::to_string(message.header.dof) + 
-                    "] does not match MPS file [" + 
-                    std::to_string(dof_) + 
+                    "ERROR - Returned DOF [" +
+                    std::to_string(message.header.dof) +
+                    "] does not match MPS file [" +
+                    std::to_string(dof_) +
                     "]"
                     );
                 break;
             // Packet Length Validation
             } else if (message.header.count != individual_ascan_obs_length_) {
                 errorToConsole(
-                    "ERROR - Returned A-Scan length [" + 
-                    std::to_string(message.header.count) + 
-                    "] does not match MPS file [" + 
-                    std::to_string(individual_ascan_obs_length_) + 
+                    "ERROR - Returned A-Scan length [" +
+                    std::to_string(message.header.count) +
+                    "] does not match MPS file [" +
+                    std::to_string(individual_ascan_obs_length_) +
                     "]"
                     );
                 break;
@@ -412,7 +391,7 @@ bool PeakHandler::sendDataRequest() {
                     data_max_amp = curr_ascan_max_amp;
                 }
 
-                data.push_back(message);
+                data.emplace_back(std::move(message));
                 ++ascan_count;
             }
 
@@ -427,14 +406,100 @@ bool PeakHandler::sendDataRequest() {
     logToConsole(std::to_string(ascan_count) + " A-Scans Received");
 
     if (ascan_count == num_a_scans_) {
-        ltpa_data_.ascans.clear();
-        ltpa_data_.ascans = data;
-        ltpa_data_.max_amplitude = data_max_amp;
-
-        valid = true;
+        output.ascans = std::move(data);
+        output.max_amplitude = data_max_amp;
+        return true;
     } else {
         errorToConsole("Incorrect amount of A-Scans returned");
+        return false;
+    }
+}
+
+
+bool PeakHandler::sendDataRequest() {
+    // TODO: Get a handle on the behavior of these different commands
+    //       and which is best for streaming and single measurements
+    sendCommand("CALS 1");
+
+    auto begin = std::chrono::high_resolution_clock::now();
+    std::vector<unsigned char> response = ltpa_client_.receive(packet_length_);
+    auto end = std::chrono::high_resolution_clock::now();
+    std::cout << "\033[32m";
+    std::cout << "Profiling [ltpa_client_.receive(packet_length_)] --- " << std::chrono::duration_cast<std::chrono::microseconds>(end-begin).count() << " us" << std::endl;
+    std::cout << "\033[0m";
+
+    return parseResponse(response, ltpa_data_);
+}
+
+
+void PeakHandler::startAsyncAcquisition(DataReadyCallback on_data_ready) {
+    if (acquiring_) {
+        return;
+    }
+    // Copy static fields from ltpa_data_ into ready_buffer_ so consumers
+    // see configuration values (digitisation_rate, geometry, etc.)
+    {
+        std::lock_guard<std::mutex> lock(data_mutex_);
+        ready_buffer_ = ltpa_data_;
+    }
+    data_ready_cb_ = on_data_ready;
+    data_ready_ = false;
+    acquiring_ = true;
+    ltpa_client_.startIoThread();
+    initiateAsyncRequest();
+}
+
+
+void PeakHandler::stopAsyncAcquisition() {
+    acquiring_ = false;
+    ltpa_client_.stopIoThread();
+}
+
+
+bool PeakHandler::getLatestData(OutputFormat& out) {
+    if (!data_ready_) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(data_mutex_);
+    out = ready_buffer_;
+    data_ready_ = false;
+    return true;
+}
+
+
+void PeakHandler::initiateAsyncRequest() {
+    sendCommand("CALS 1");
+    ltpa_client_.asyncReceive(
+        packet_length_,
+        [this](std::vector<unsigned char> data, boost::system::error_code ec) {
+            onReceiveComplete(std::move(data), ec);
+        });
+}
+
+
+void PeakHandler::onReceiveComplete(std::vector<unsigned char> data, boost::system::error_code ec) {
+    if (ec) {
+        errorToConsole("Async receive error: " + ec.message());
+        if (acquiring_) {
+            initiateAsyncRequest();
+        }
+        return;
     }
 
-    return valid;
+    OutputFormat parsed = ltpa_data_; // copy static config fields
+    bool valid = parseResponse(data, parsed);
+
+    {
+        std::lock_guard<std::mutex> lock(data_mutex_);
+        ready_buffer_ = std::move(parsed);
+        data_ready_ = true;
+    }
+
+    if (data_ready_cb_) {
+        data_ready_cb_(valid);
+    }
+
+    if (acquiring_) {
+        initiateAsyncRequest();
+    }
 }

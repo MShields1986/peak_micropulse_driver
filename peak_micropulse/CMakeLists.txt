@@ -10,8 +10,9 @@ include(FetchContent)
 FetchContent_Declare(
   simple_boost_asio_sockets
   GIT_REPOSITORY https://github.com/MShields1986/boost_asio_socket_wrappers
-  GIT_TAG        feature/nodelet_compatibility
-  # GIT_TAG        feature/async_io
+  # GIT_TAG        feature/nodelet_compatibility
+  GIT_TAG        feature/async_io
+  # SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../boost_asio_socket_wrappers
 )
 FetchContent_MakeAvailable(simple_boost_asio_sockets)
 
