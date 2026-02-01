@@ -201,7 +201,7 @@ void PeakHandler::sendCommand(const std::string& command) {
 }
 
 
-void PeakHandler::sendReset(int digitisation_rate/* = 0*/) {
+void PeakHandler::sendReset(int digitisation_rate, int sleep_seconds) {
     int attempts(0);
     int max_attempts(2); // TODO: Consider exposing as arg
     bool success(false);
@@ -224,7 +224,7 @@ void PeakHandler::sendReset(int digitisation_rate/* = 0*/) {
             exit(0);
         }
         
-        sleep(10);
+        sleep(sleep_seconds);
         // Receive 32 bytes of data for the returned header after reset
         std::vector<unsigned char> response = ltpa_client_.receive(32);
         if ((int)response.front() == 35) {
@@ -445,14 +445,26 @@ void PeakHandler::startAsyncAcquisition(DataReadyCallback on_data_ready) {
     data_ready_cb_ = on_data_ready;
     data_ready_ = false;
     acquiring_ = true;
+    uint64_t gen = ++async_generation_;
     ltpa_client_.startIoThread();
-    initiateAsyncRequest();
+    // Post to io thread so all socket I/O is single-threaded
+    boost::asio::post(ltpa_client_.socket_.get_executor(), [this, gen]() {
+        if (gen == async_generation_.load() && acquiring_) {
+            initiateAsyncRequest(gen);
+        }
+    });
 }
 
 
 void PeakHandler::stopAsyncAcquisition() {
     acquiring_ = false;
-    ltpa_client_.stopIoThread();
+    ltpa_client_.stopIoThread();       // io_context::stop() is thread-safe, then joins
+    // After join, io thread is done. Single-threaded from here.
+    if (ltpa_client_.socket_.is_open()) {
+        boost::system::error_code ec;
+        ltpa_client_.socket_.cancel(ec);  // cancel pending async ops (safe: no io thread)
+        ltpa_client_.drainSocket();
+    }
 }
 
 
@@ -461,27 +473,34 @@ bool PeakHandler::getLatestData(OutputFormat& out) {
         return false;
     }
     std::lock_guard<std::mutex> lock(data_mutex_);
+    if (!data_ready_) {
+        return false;  // consumed by another thread
+    }
     out = ready_buffer_;
     data_ready_ = false;
     return true;
 }
 
 
-void PeakHandler::initiateAsyncRequest() {
+void PeakHandler::initiateAsyncRequest(uint64_t gen) {
     sendCommand("CALS 1");
     ltpa_client_.asyncReceive(
         packet_length_,
-        [this](std::vector<unsigned char> data, boost::system::error_code ec) {
-            onReceiveComplete(std::move(data), ec);
+        [this, gen](std::vector<unsigned char> data, boost::system::error_code ec) {
+            onReceiveComplete(std::move(data), ec, gen);
         });
 }
 
 
-void PeakHandler::onReceiveComplete(std::vector<unsigned char> data, boost::system::error_code ec) {
+void PeakHandler::onReceiveComplete(std::vector<unsigned char> data,
+                                     boost::system::error_code ec,
+                                     uint64_t gen) {
+    if (gen != async_generation_.load()) return;  // stale callback
+
     if (ec) {
         errorToConsole("Async receive error: " + ec.message());
         if (acquiring_) {
-            initiateAsyncRequest();
+            initiateAsyncRequest(gen);
         }
         return;
     }
@@ -500,6 +519,6 @@ void PeakHandler::onReceiveComplete(std::vector<unsigned char> data, boost::syst
     }
 
     if (acquiring_) {
-        initiateAsyncRequest();
+        initiateAsyncRequest(gen);
     }
 }

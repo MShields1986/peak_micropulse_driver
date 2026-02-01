@@ -86,7 +86,7 @@ public:
 
     void                               connect();
     void                               sendCommand(const std::string& command);
-    void                               sendReset(int digitisation_rate);
+    void                               sendReset(int digitisation_rate, int sleep_seconds = 10);
     void                               sendMpsConfiguration();
     DofMessage                         dataOutpoutFormatReader(const std::vector<unsigned char>& packet);
     bool                               sendDataRequest();
@@ -104,8 +104,8 @@ private:
     bool                               parseResponse(const std::vector<unsigned char>& response, OutputFormat& output);
 
     // Async loop internals
-    void                               initiateAsyncRequest();
-    void                               onReceiveComplete(std::vector<unsigned char> data, boost::system::error_code ec);
+    void                               initiateAsyncRequest(uint64_t gen);
+    void                               onReceiveComplete(std::vector<unsigned char> data, boost::system::error_code ec, uint64_t gen);
 
     OutputFormat                       ltpa_data_;
     OutputFormat*                      ltpa_data_ptr_;
@@ -137,5 +137,6 @@ private:
     OutputFormat                       ready_buffer_;
     std::atomic<bool>                  data_ready_{false};
     std::atomic<bool>                  acquiring_{false};
+    std::atomic<uint64_t>              async_generation_{0};
     DataReadyCallback                  data_ready_cb_;
 };

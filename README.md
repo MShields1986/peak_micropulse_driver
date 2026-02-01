@@ -110,10 +110,52 @@ Data is output as a OutputFormat struct, which is defined in [peak_handler.h](ht
     };
 ```
 
-# Tests
-Unit tests use [Google Test](https://github.com/google/googletest) and have no ROS dependency. To build and run them...
+## Async Acquisition
+The driver supports asynchronous, non-blocking data acquisition for real-time streaming. All socket I/O runs on a dedicated io thread to avoid data races.
+
+```cpp
+// Start continuous async acquisition
+peak_handler.startAsyncAcquisition([](bool valid) {
+    // Optional callback invoked on each received frame
+});
+
+// Poll for the latest data from any thread
+PeakHandler::OutputFormat out;
+if (peak_handler.getLatestData(out)) {
+    // process out.ascans ...
+}
+
+// Stop acquisition (thread-safe, blocks until io thread joins)
+peak_handler.stopAsyncAcquisition();
+```
+
+## Tests
+Unit tests and stress/integration tests use [Google Test](https://github.com/google/googletest) and have no ROS dependency. A mock hardware server (`MockPeakHardware`) is used for integration testing without physical hardware.
+
 ```bash
 cmake -DBUILD_PeakMicroPulse_TESTS=ON -S . -B build/
 cmake --build build/
 ctest --test-dir build/ --output-on-failure
 ```
+
+### Sanitizer Builds
+AddressSanitizer and ThreadSanitizer can be enabled for additional checks:
+```bash
+# AddressSanitizer
+cmake -DBUILD_PeakMicroPulse_TESTS=ON -DENABLE_ASAN=ON -S . -B build_asan/
+cmake --build build_asan/
+ctest --test-dir build_asan/ -E '(Memcheck|Helgrind)' --output-on-failure
+
+# ThreadSanitizer
+cmake -DBUILD_PeakMicroPulse_TESTS=ON -DENABLE_TSAN=ON -S . -B build_tsan/
+cmake --build build_tsan/
+ctest --test-dir build_tsan/ -E '(Memcheck|Helgrind)' --output-on-failure
+```
+
+## Bugs and Feature Requests
+Please report bugs and request features using the [Issue Tracker](https://github.com/MShields1986/peak_micropulse_driver/issues).
+
+## Funding
+The authors acknowledge the support of:
+- RCSRF1920/10/32; Spirit Aerosystems/Royal Academy of Engineering Research Chair “In-process Non-destructive Testing for Aerospace Structures”
+- Research Centre for Non-Destructive Evaluation Technology Transfer Project Scheme
