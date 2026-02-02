@@ -274,16 +274,27 @@ void PeakHandler::sendMpsConfiguration() {
 }
 
 
-PeakHandler::DofMessage PeakHandler::dataOutpoutFormatReader(const std::vector<unsigned char>& packet) {
+PeakHandler::DofMessage PeakHandler::dataOutpoutFormatReader(const unsigned char* packet, size_t length) {
     DofMessage data;
 
-    if (packet.front() == 26) {
+    if (length == 0) {
+        data.header.header = error;
+        return data;
+    }
+
+    if (packet[0] == 26) {
         // TODO: Subheader processing to separate method
         data.header.header =        ascan;
         data.header.count =         (int)((packet[3] << 16) | (packet[2] << 8) | packet[1]);
         data.header.testNo =        (int)(packet[5] << 8 | packet[4]);
         data.header.dof =           (int)packet[6];
         data.header.channel =       (int)packet[7];
+
+        // Pre-allocate amplitude vector to avoid repeated reallocations
+        int expected_samples = (data.header.dof == 4)
+            ? (data.header.count - sub_header_size_) / 2
+            : (data.header.count - sub_header_size_);
+        data.amps.reserve(expected_samples);
 
         // 8 Bit Mode
         if (data.header.dof == 1) {
@@ -303,28 +314,28 @@ PeakHandler::DofMessage PeakHandler::dataOutpoutFormatReader(const std::vector<u
             errorToConsole("ERROR - Unkown DOF packet sub-header byte: " + std::to_string( data.header.dof ));
         }
 
-    } else if (packet.front() == 28) {
+    } else if (packet[0] == 28) {
         logToConsole("Normal indications returned");
         data.header.header = normal_indications;
         // TODO: Implement normal indications
 
-    } else if (packet.front() == 29) {
+    } else if (packet[0] == 29) {
         logToConsole("Gain reduced indications returned");
         data.header.header = gain_reduced_indications;
         // TODO: Implement gain reduced indications
 
-    } else if (packet.front() == 30) {
+    } else if (packet[0] == 30) {
         logToConsole("LWL coupling failure returned");
         data.header.header = lwl_coupling_failure;
         // TODO: Implement LWL (coupling failure)
 
-    } else if (packet.front() == 6) {
+    } else if (packet[0] == 6) {
         errorToConsole("ERROR - LTPA error message returned");
         data.header.header = error;
         // TODO: Implement better error message return handling
 
     } else {
-        errorToConsole("ERROR - Unkown DOF packet sub-header byte: " + std::to_string((int)packet.front()));
+        errorToConsole("ERROR - Unkown DOF packet sub-header byte: " + std::to_string((int)packet[0]));
         // TODO: Subheader processing to separate method
         data.header.header =        error;
         data.header.count =         (int)((packet[3] << 16) | (packet[2] << 8) | packet[1]);
@@ -334,6 +345,11 @@ PeakHandler::DofMessage PeakHandler::dataOutpoutFormatReader(const std::vector<u
     }
 
     return data;
+}
+
+
+PeakHandler::DofMessage PeakHandler::dataOutpoutFormatReader(const std::vector<unsigned char>& packet) {
+    return dataOutpoutFormatReader(packet.data(), packet.size());
 }
 
 
@@ -347,12 +363,8 @@ bool PeakHandler::parseResponse(const std::vector<unsigned char>& response, Outp
     data.reserve(num_a_scans_);
 
     while (curr_ascan_i < packet_length_) {
-        std::vector<unsigned char> ascan_bytes(
-            &response[curr_ascan_i],
-            &response[curr_ascan_i + individual_ascan_obs_length_]
-            );
-
-        DofMessage message = dataOutpoutFormatReader(ascan_bytes);
+        DofMessage message = dataOutpoutFormatReader(
+            &response[curr_ascan_i], individual_ascan_obs_length_);
 
         if (message.header.header == ascan) {
             // DoF Validation
@@ -476,7 +488,7 @@ bool PeakHandler::getLatestData(OutputFormat& out) {
     if (!data_ready_) {
         return false;  // consumed by another thread
     }
-    out = ready_buffer_;
+    out = std::move(ready_buffer_);
     data_ready_ = false;
     return true;
 }
@@ -484,15 +496,15 @@ bool PeakHandler::getLatestData(OutputFormat& out) {
 
 void PeakHandler::initiateAsyncRequest(uint64_t gen) {
     sendCommand("CALS 1");
-    ltpa_client_.asyncReceive(
+    ltpa_client_.asyncReceiveZeroCopy(
         packet_length_,
-        [this, gen](std::vector<unsigned char> data, boost::system::error_code ec) {
-            onReceiveComplete(std::move(data), ec, gen);
+        [this, gen](const std::vector<unsigned char>& data, boost::system::error_code ec) {
+            onReceiveComplete(data, ec, gen);
         });
 }
 
 
-void PeakHandler::onReceiveComplete(std::vector<unsigned char> data,
+void PeakHandler::onReceiveComplete(const std::vector<unsigned char>& data,
                                      boost::system::error_code ec,
                                      uint64_t gen) {
     if (gen != async_generation_.load()) return;  // stale callback
@@ -505,7 +517,22 @@ void PeakHandler::onReceiveComplete(std::vector<unsigned char> data,
         return;
     }
 
-    OutputFormat parsed = ltpa_data_; // copy static config fields
+    // Copy only scalar config fields — avoids copying vectors from ltpa_data_
+    OutputFormat parsed;
+    parsed.digitisation_rate     = ltpa_data_.digitisation_rate;
+    parsed.ascan_length          = ltpa_data_.ascan_length;
+    parsed.num_a_scans           = ltpa_data_.num_a_scans;
+    parsed.n_elements            = ltpa_data_.n_elements;
+    parsed.element_pitch         = ltpa_data_.element_pitch;
+    parsed.inter_element_spacing = ltpa_data_.inter_element_spacing;
+    parsed.element_width         = ltpa_data_.element_width;
+    parsed.vel_wedge             = ltpa_data_.vel_wedge;
+    parsed.vel_couplant          = ltpa_data_.vel_couplant;
+    parsed.vel_material          = ltpa_data_.vel_material;
+    parsed.wedge_angle           = ltpa_data_.wedge_angle;
+    parsed.wedge_depth           = ltpa_data_.wedge_depth;
+    parsed.couplant_depth        = ltpa_data_.couplant_depth;
+    parsed.specimen_depth        = ltpa_data_.specimen_depth;
     bool valid = parseResponse(data, parsed);
 
     {

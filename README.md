@@ -138,15 +138,15 @@ cmake --build build/
 ctest --test-dir build/ --output-on-failure
 ```
 
-### Sanitizer Builds
-AddressSanitizer and ThreadSanitizer can be enabled for additional checks:
+### Sanitiser Builds
+AddressSanitiser and ThreadSanitiser can be enabled for additional checks:
 ```bash
-# AddressSanitizer
+# AddressSanitiser
 cmake -DBUILD_PeakMicroPulse_TESTS=ON -DENABLE_ASAN=ON -S . -B build_asan/
 cmake --build build_asan/
 ctest --test-dir build_asan/ -E '(Memcheck|Helgrind)' --output-on-failure
 
-# ThreadSanitizer
+# ThreadSanitiser
 cmake -DBUILD_PeakMicroPulse_TESTS=ON -DENABLE_TSAN=ON -S . -B build_tsan/
 cmake --build build_tsan/
 ctest --test-dir build_tsan/ -E '(Memcheck|Helgrind)' --output-on-failure
