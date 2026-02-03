@@ -94,7 +94,8 @@ public:
 
     // Async acquisition API
     using DataReadyCallback = std::function<void(bool)>;
-    void                               startAsyncAcquisition(DataReadyCallback on_data_ready = nullptr);
+    void                               startAsyncAcquisition(DataReadyCallback on_data_ready = nullptr,
+                                                              int acquisition_rate_hz = 0);
     void                               stopAsyncAcquisition();
     bool                               getLatestData(OutputFormat& out);
 
@@ -105,7 +106,8 @@ private:
     bool                               parseResponse(const std::vector<unsigned char>& response, OutputFormat& output);
 
     // Async loop internals
-    void                               initiateAsyncRequest(uint64_t gen);
+    void                               initiateAsyncReceive(uint64_t gen);
+    void                               scheduleCalsTimer(uint64_t gen);
     void                               onReceiveComplete(const std::vector<unsigned char>& data, boost::system::error_code ec, uint64_t gen);
 
     OutputFormat                       ltpa_data_;
@@ -140,4 +142,9 @@ private:
     std::atomic<bool>                  acquiring_{false};
     std::atomic<uint64_t>              async_generation_{0};
     DataReadyCallback                  data_ready_cb_;
+
+    // Decoupled timer for sending CALS commands at fixed rate
+    std::unique_ptr<boost::asio::steady_timer> cals_timer_;
+    std::chrono::milliseconds          cals_period_{50};  // Default 20 Hz
+    std::atomic<bool>                  send_loop_active_{false};
 };

@@ -2,13 +2,15 @@
 
 #include <iostream>
 #include <cstring>
+#include <sstream>
 
 
 MockPeakHardware::MockPeakHardware(const Config& config)
     : config_(config),
       io_context_(),
       acceptor_(io_context_),
-      socket_(io_context_)
+      socket_(io_context_),
+      response_timer_(nullptr)
 {
 }
 
@@ -31,7 +33,8 @@ void MockPeakHardware::start() {
 
 
 void MockPeakHardware::stop() {
-    running_ = false;
+    // Set flag first (atomic write is visible to I/O thread)
+    running_.store(false, std::memory_order_release);
     io_context_.stop();  // thread-safe, unblocks io_context::run()
 
     if (server_thread_.joinable()) {
@@ -42,6 +45,7 @@ void MockPeakHardware::stop() {
     boost::system::error_code ec;
     socket_.close(ec);
     acceptor_.close(ec);
+    response_timer_.reset();
 }
 
 
@@ -72,7 +76,7 @@ void MockPeakHardware::serverLoop() {
         io_context_.run();
     } catch (const boost::system::system_error& e) {
         // Expected when stop() closes the socket/acceptor
-        if (running_) {
+        if (running_.load(std::memory_order_acquire)) {
             std::cerr << "MockPeakHardware: " << e.what() << std::endl;
         }
     }
@@ -81,7 +85,7 @@ void MockPeakHardware::serverLoop() {
 
 void MockPeakHardware::doAccept() {
     acceptor_.async_accept(socket_, [this](boost::system::error_code ec) {
-        if (!ec && running_) {
+        if (!ec && running_.load(std::memory_order_acquire)) {
             read_buffer_.clear();
             doReadByte();
         }
@@ -92,7 +96,7 @@ void MockPeakHardware::doAccept() {
 void MockPeakHardware::doReadByte() {
     boost::asio::async_read(socket_, boost::asio::buffer(&read_byte_, 1),
         [this](boost::system::error_code ec, std::size_t) {
-            if (ec || !running_) return;
+            if (ec || !running_.load(std::memory_order_acquire)) return;
             read_buffer_.push_back(read_byte_);
             if (read_buffer_.size() >= 2 &&
                 read_buffer_[read_buffer_.size()-2] == '\r' &&
@@ -112,9 +116,18 @@ void MockPeakHardware::handleCommand(const std::string& command) {
         sendBytes(response);
         ++reset_count_;
     } else if (command.rfind("CALS", 0) == 0) {
-        auto packet = buildDataPacket();
-        sendBytes(packet);
+        // Buffer the CALS command - hardware can buffer multiple commands
+        ++pending_cals_count_;
         ++data_request_count_;
+
+        // If no timer is currently running, schedule a response
+        if (pending_cals_count_ == 1) {
+            scheduleDataResponse();
+        }
+    } else if (command.rfind("GATS", 0) == 0 || command.rfind("GAT ", 0) == 0) {
+        // Parse gate settings to determine response timing
+        parseGatsCommand(command);
+        ++config_lines_count_;
     } else {
         // MPS configuration line — absorb
         ++config_lines_count_;
@@ -187,8 +200,75 @@ std::vector<unsigned char> MockPeakHardware::buildAscanMessage(int ascan_index) 
 void MockPeakHardware::sendBytes(const std::vector<unsigned char>& data) {
     boost::system::error_code ec;
     boost::asio::write(socket_, boost::asio::buffer(data), ec);
-    if (ec && running_) {
+    if (ec && running_.load(std::memory_order_acquire)) {
         std::cerr << "MockPeakHardware: send error: " << ec.message() << std::endl;
-        running_ = false;
+        running_.store(false, std::memory_order_release);
+    }
+}
+
+
+void MockPeakHardware::parseGatsCommand(const std::string& command) {
+    // Format: GAT(S) <test number> <gate start> <gate end>
+    // Example: GATS 1 16 791 or GAT 1 1000 2000
+    std::istringstream iss(command);
+    std::string cmd;
+    int test_num, gate_start, gate_end;
+
+    iss >> cmd >> test_num >> gate_start >> gate_end;
+
+    if (!iss.fail()) {
+        config_.gate_start = gate_start;
+        config_.gate_end = gate_end;
+    }
+}
+
+
+std::chrono::microseconds MockPeakHardware::calculateResponseDelay() const {
+    // Machine unit = 1 / digitization_rate in microseconds
+    // For 100MHz: 1 machine unit = 0.01us (10ns)
+    // For 50MHz:  1 machine unit = 0.02us (20ns)
+    // For 25MHz:  1 machine unit = 0.04us (40ns)
+    // For 10MHz:  1 machine unit = 0.1us  (100ns)
+
+    // Gate end defines when the ultrasound measurement window closes
+    // The response can only be sent after this time plus processing delay
+
+    double machine_unit_us = 1.0 / static_cast<double>(config_.actual_dig_rate);
+    double gate_time_us = static_cast<double>(config_.gate_end) * machine_unit_us;
+
+    // Total delay = ultrasound measurement window + fixed processing/network delay
+    int total_delay_us = static_cast<int>(gate_time_us) + config_.fixed_delay_us;
+
+    return std::chrono::microseconds(total_delay_us);
+}
+
+
+void MockPeakHardware::scheduleDataResponse() {
+    if (!response_timer_) {
+        response_timer_ = std::make_unique<boost::asio::steady_timer>(io_context_);
+    }
+
+    auto delay = calculateResponseDelay();
+    response_timer_->expires_after(delay);
+    response_timer_->async_wait([this](boost::system::error_code ec) {
+        if (ec || !running_.load(std::memory_order_acquire)) return;
+        sendQueuedResponse();
+    });
+}
+
+
+void MockPeakHardware::sendQueuedResponse() {
+    if (pending_cals_count_ <= 0 || !running_.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    // Send ONE response
+    auto packet = buildDataPacket();
+    sendBytes(packet);
+    --pending_cals_count_;
+
+    // If more CALS are pending, schedule another response after the measurement delay
+    if (pending_cals_count_ > 0) {
+        scheduleDataResponse();
     }
 }

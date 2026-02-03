@@ -7,6 +7,8 @@
 #include <mutex>
 #include <condition_variable>
 #include <cstdint>
+#include <chrono>
+#include <queue>
 #include <boost/asio.hpp>
 
 class MockPeakHardware {
@@ -17,8 +19,11 @@ public:
         int ascan_length     = 100;     // samples per A-scan
         int num_a_scans      = 5;       // number of focal laws / channels
         int system_type      = 0x30;    // byte 4 of RST response (LTPA)
-        int default_dig_rate = 50;      // byte 8 of RST response
-        int actual_dig_rate  = 50;      // byte 9 of RST response
+        int default_dig_rate = 50;      // byte 8 of RST response (MHz)
+        int actual_dig_rate  = 50;      // byte 9 of RST response (MHz)
+        int gate_start       = 0;       // gate start in machine units
+        int gate_end         = 1000;    // gate end in machine units
+        int fixed_delay_us   = 100;     // fixed processing/network delay in microseconds
     };
 
     explicit MockPeakHardware(const Config& config);
@@ -43,6 +48,9 @@ private:
     void doAccept();
     void doReadByte();
     void handleCommand(const std::string& command);
+    void parseGatsCommand(const std::string& command);
+    void scheduleDataResponse();
+    void sendQueuedResponse();
 
     std::vector<unsigned char> buildResetResponse() const;
     std::vector<unsigned char> buildDataPacket() const;
@@ -50,11 +58,15 @@ private:
 
     void sendBytes(const std::vector<unsigned char>& data);
 
+    // Calculate response delay based on gate settings and digitization rate
+    std::chrono::microseconds calculateResponseDelay() const;
+
     Config                          config_;
 
     boost::asio::io_context         io_context_;
     boost::asio::ip::tcp::acceptor  acceptor_;
     boost::asio::ip::tcp::socket    socket_;
+    std::unique_ptr<boost::asio::steady_timer> response_timer_;
     int                             actual_port_ = 0;
 
     std::thread                     server_thread_;
@@ -65,6 +77,9 @@ private:
 
     std::string                     read_buffer_;
     char                            read_byte_;
+
+    // Queue for buffered CALS commands (hardware buffers commands)
+    int                             pending_cals_count_{0};
 
     std::atomic<int>                reset_count_{0};
     std::atomic<int>                config_lines_count_{0};

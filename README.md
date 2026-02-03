@@ -1,7 +1,22 @@
 # peak_micropulse_driver
 A C++ driver to handle external control of the Peak MicroPulse hardware range over TCP.
 
-# Including in an External Project
+## Citation
+If you use this repository for your research, please cite the following conference where it was first shared.
+
+    @conference{shields2025bindt,
+        title = "Process-to-part phased array inspection of a large scale composite aerospace specimen",
+        keywords = "non-destructive testing, robotic NDT, process-to-part, array inspection", author = "Matthew Shields and \{Wathavana Vithanage\}, \{Randika Kosala\} and Gareth Pierce and Gavin Munro and Tom O'Hare and Michael Grosser and Janet O'Brien-O'Reilly",
+        year = "2025",
+        month = sep,
+        day = "10",
+        note = "62nd Annual British Conference on NDT, NDT 2025 ;
+        Conference date: 09-09-2025 Through 11-09-2025",
+        url = "https://www.bindt.org/events-and-awards/ndt-2025/",
+    }
+
+## Usage
+### Including in an External Project
 Use the inclusions below to have CMake fetch and build the library for you.
 ```cmake
 include(FetchContent)
@@ -18,7 +33,7 @@ Then link against your intended compilation target.
 target_link_libraries(${TARGET_NAME} PeakMicroPulseHandler)
 ```
 
-# Usage
+### Stand Alone Usage
 See the example, [standalone.cpp](https://github.com/MShields1986/peak_micropulse_driver/blob/main/examples/standalone.cpp), which can be compiled using...
 ```bash
 cmake -DBUILD_PeakMicroPulse_EXAMPLES:BOOL=ON -S . -B build/
@@ -110,7 +125,7 @@ Data is output as a OutputFormat struct, which is defined in [peak_handler.h](ht
     };
 ```
 
-## Async Acquisition
+### Async Acquisition
 The driver supports asynchronous, non-blocking data acquisition for real-time streaming. All socket I/O runs on a dedicated io thread to avoid data races.
 
 ```cpp

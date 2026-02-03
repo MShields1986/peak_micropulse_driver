@@ -37,14 +37,20 @@ if(VALGRIND_EXECUTABLE)
             --error-exitcode=1
             $<TARGET_FILE:test_stress>
     )
-    add_test(NAME StressTests_Helgrind
-        COMMAND ${VALGRIND_EXECUTABLE}
-            --tool=helgrind
-            --error-exitcode=1
-            $<TARGET_FILE:test_stress>
-    )
-    set_tests_properties(StressTests_Memcheck StressTests_Helgrind PROPERTIES
+    set_tests_properties(StressTests_Memcheck PROPERTIES
         LABELS "valgrind"
         TIMEOUT 300
     )
+    # Helgrind disabled - it doesn't understand C++ std::atomic and reports
+    # false positives. Use ThreadSanitizer (TSAN) build instead for race detection.
+    # add_test(NAME StressTests_Helgrind
+    #     COMMAND ${VALGRIND_EXECUTABLE}
+    #         --tool=helgrind
+    #         --error-exitcode=1
+    #         $<TARGET_FILE:test_stress>
+    # )
+    # set_tests_properties(StressTests_Helgrind PROPERTIES
+    #     LABELS "valgrind"
+    #     TIMEOUT 300
+    # )
 endif()

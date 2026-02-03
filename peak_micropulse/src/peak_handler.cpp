@@ -444,7 +444,8 @@ bool PeakHandler::sendDataRequest() {
 }
 
 
-void PeakHandler::startAsyncAcquisition(DataReadyCallback on_data_ready) {
+void PeakHandler::startAsyncAcquisition(DataReadyCallback on_data_ready,
+                                          int acquisition_rate_hz) {
     if (acquiring_) {
         return;
     }
@@ -457,12 +458,28 @@ void PeakHandler::startAsyncAcquisition(DataReadyCallback on_data_ready) {
     data_ready_cb_ = on_data_ready;
     data_ready_ = false;
     acquiring_ = true;
+    send_loop_active_ = true;
+
+    // Calculate CALS period from acquisition rate (default 20 Hz if not specified)
+    if (acquisition_rate_hz > 0) {
+        cals_period_ = std::chrono::milliseconds(1000 / acquisition_rate_hz);
+    } else {
+        cals_period_ = std::chrono::milliseconds(50);  // Default 20 Hz
+    }
+
     uint64_t gen = ++async_generation_;
     ltpa_client_.startIoThread();
+
+    // Create the timer on the io_context
+    cals_timer_ = std::make_unique<boost::asio::steady_timer>(
+        ltpa_client_.socket_.get_executor());
+
     // Post to io thread so all socket I/O is single-threaded
+    // Start both the receive loop and the CALS send timer
     boost::asio::post(ltpa_client_.socket_.get_executor(), [this, gen]() {
         if (gen == async_generation_.load() && acquiring_) {
-            initiateAsyncRequest(gen);
+            initiateAsyncReceive(gen);  // Always listening for responses
+            scheduleCalsTimer(gen);     // Sends CALS at fixed rate
         }
     });
 }
@@ -470,6 +487,11 @@ void PeakHandler::startAsyncAcquisition(DataReadyCallback on_data_ready) {
 
 void PeakHandler::stopAsyncAcquisition() {
     acquiring_ = false;
+    send_loop_active_ = false;
+
+    // Don't call cals_timer_->cancel() here - it's not thread-safe.
+    // io_context::stop() in stopIoThread() will cancel all pending async ops.
+
     ltpa_client_.stopIoThread();       // io_context::stop() is thread-safe, then joins
     // After join, io thread is done. Single-threaded from here.
     if (ltpa_client_.socket_.is_open()) {
@@ -477,6 +499,9 @@ void PeakHandler::stopAsyncAcquisition() {
         ltpa_client_.socket_.cancel(ec);  // cancel pending async ops (safe: no io thread)
         ltpa_client_.drainSocket();
     }
+
+    // Reset timer after cleanup (single-threaded now)
+    cals_timer_.reset();
 }
 
 
@@ -494,13 +519,32 @@ bool PeakHandler::getLatestData(OutputFormat& out) {
 }
 
 
-void PeakHandler::initiateAsyncRequest(uint64_t gen) {
-    sendCommand("CALS 1");
+void PeakHandler::initiateAsyncReceive(uint64_t gen) {
+    auto begin = std::chrono::high_resolution_clock::now();
+
     ltpa_client_.asyncReceiveZeroCopy(
         packet_length_,
         [this, gen](const std::vector<unsigned char>& data, boost::system::error_code ec) {
             onReceiveComplete(data, ec, gen);
         });
+    auto end = std::chrono::high_resolution_clock::now();
+    std::cout << "\033[32m";
+    std::cout << "Profiling [ltpa_client_..asyncReceiveZeroCopy(packet_length_, ...)] --- " << std::chrono::duration_cast<std::chrono::microseconds>(end-begin).count() << " us" << std::endl;
+    std::cout << "\033[0m";
+
+}
+
+
+void PeakHandler::scheduleCalsTimer(uint64_t gen) {
+    if (!send_loop_active_ || gen != async_generation_.load()) return;
+
+    sendCommand("CALS 1");
+
+    cals_timer_->expires_after(cals_period_);
+    cals_timer_->async_wait([this, gen](boost::system::error_code ec) {
+        if (ec) return;  // Timer cancelled or error
+        scheduleCalsTimer(gen);
+    });
 }
 
 
@@ -510,9 +554,13 @@ void PeakHandler::onReceiveComplete(const std::vector<unsigned char>& data,
     if (gen != async_generation_.load()) return;  // stale callback
 
     if (ec) {
+        // Clean shutdown - don't log or retry on operation_aborted
+        if (ec == boost::asio::error::operation_aborted) {
+            return;
+        }
         errorToConsole("Async receive error: " + ec.message());
         if (acquiring_) {
-            initiateAsyncRequest(gen);
+            initiateAsyncReceive(gen);
         }
         return;
     }
@@ -546,6 +594,6 @@ void PeakHandler::onReceiveComplete(const std::vector<unsigned char>& data,
     }
 
     if (acquiring_) {
-        initiateAsyncRequest(gen);
+        initiateAsyncReceive(gen);
     }
 }
