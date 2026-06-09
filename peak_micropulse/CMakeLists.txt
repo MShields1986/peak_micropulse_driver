@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.0..3.24)
+cmake_minimum_required(VERSION 3.5..3.24)
 project(PeakMicroPulseHandler
     VERSION 0.0.1
     DESCRIPTION "Class to handle external control of Peak MicroPulse hardware over TCP."
@@ -10,7 +10,9 @@ include(FetchContent)
 FetchContent_Declare(
   simple_boost_asio_sockets
   GIT_REPOSITORY https://github.com/MShields1986/boost_asio_socket_wrappers
-  GIT_TAG        main
+  # GIT_TAG        feature/nodelet_compatibility
+  GIT_TAG        feature/async_io
+  # SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../boost_asio_socket_wrappers
 )
 FetchContent_MakeAvailable(simple_boost_asio_sockets)
 

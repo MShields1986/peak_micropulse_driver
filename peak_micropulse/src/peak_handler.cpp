@@ -2,28 +2,34 @@
 
 
 
-PeakHandler::PeakHandler(
-        const int& frequency,
-        const std::string& ip_address,
-        const int& port,
-        const std::string& mps_file)
+PeakHandler::PeakHandler()
     :  ltpa_data_(), ltpa_data_ptr_(&ltpa_data_),
        sub_header_size_(8),
-       frequency_(frequency),
-
-       // LTPA TCP Client
-       ip_address_(ip_address),
-       port_(port),
-       ltpa_client_(ip_address_, port_),
-
-       // LTPA Configuration
-       mps_file_(mps_file)
+       ltpa_client_()
 {
 }
 
 
 PeakHandler::~PeakHandler() {
-    ltpa_client_.~TcpClientBoost();
+    stopAsyncAcquisition();
+}
+
+
+void PeakHandler::setup(const int& frequency,
+                        const std::string& ip_address,
+                        const int& port,
+                        const std::string& mps_file)
+
+{
+    frequency_ = frequency;
+
+    // Micropulse Hardware TCP Client
+    ip_address_ = ip_address;
+    port_ = port;
+    ltpa_client_.setup(ip_address_, port_);
+
+    // Micropulse Configuration
+    mps_file_ = mps_file;
 }
 
 
@@ -81,6 +87,7 @@ void PeakHandler::readMpsFile() {
     while(std::getline(file, line))
     {
         // TODO: May need to trim leading and trailing whitespace here and ignore comments?
+        // UTF-8 and strip white space
         commands_.push_back(line);
 
         // TODO: Consider parsing the NUM directive
@@ -172,7 +179,7 @@ void PeakHandler::calcPacketLength() {
     // TODO: Implememnt DOF 2, 3, 5 & 6
 
     } else {
-        errorToConsole("ERROR - Unkown DOF in .mps file: " + std::to_string(dof_));
+        errorToConsole("ERROR - Unknown DOF in .mps file: " + std::to_string(dof_));
     }
 
     packet_length_ = num_a_scans_ * individual_ascan_obs_length_;
@@ -182,10 +189,9 @@ void PeakHandler::calcPacketLength() {
 }
 
 
-void PeakHandler::connect(int digitisation_rate/* = 0*/) {
+void PeakHandler::connect() {
     logToConsole("Connecting to LTPA at " + ip_address_);
     ltpa_client_.connect();
-    sendReset(digitisation_rate);
 }
 
 
@@ -195,7 +201,7 @@ void PeakHandler::sendCommand(const std::string& command) {
 }
 
 
-void PeakHandler::sendReset(int digitisation_rate/* = 0*/) {
+void PeakHandler::sendReset(int digitisation_rate, int sleep_seconds) {
     int attempts(0);
     int max_attempts(2); // TODO: Consider exposing as arg
     bool success(false);
@@ -218,7 +224,7 @@ void PeakHandler::sendReset(int digitisation_rate/* = 0*/) {
             exit(0);
         }
         
-        sleep(10);
+        sleep(sleep_seconds);
         // Receive 32 bytes of data for the returned header after reset
         std::vector<unsigned char> response = ltpa_client_.receive(32);
         if ((int)response.front() == 35) {
@@ -268,139 +274,138 @@ void PeakHandler::sendMpsConfiguration() {
 }
 
 
-auto PeakHandler::dataOutpoutFormatReader(const std::vector<unsigned char>& packet) {
+PeakHandler::DofMessage PeakHandler::dataOutpoutFormatReader(const unsigned char* packet, size_t length) {
     DofMessage data;
 
-    if (packet.front() == 26) {
+    if (length == 0) {
+        data.header.header = error;
+        return data;
+    }
+
+    if (packet[0] == 26) {
         // TODO: Subheader processing to separate method
         data.header.header =        ascan;
         data.header.count =         (int)((packet[3] << 16) | (packet[2] << 8) | packet[1]);
         data.header.testNo =        (int)(packet[5] << 8 | packet[4]);
         data.header.dof =           (int)packet[6];
         data.header.channel =       (int)packet[7];
-        //data.amps.clear();
 
-        // TODO: Remove debug outputs after testing
-        //logToConsole("--------=== New A-Scan ===--------");
-        //logToConsole("A-Scan length: " + std::to_string(data.header.count));
-        //logToConsole("Test number: " + std::to_string(data.header.testNo));
-        //logToConsole("DOF: " + std::to_string(data.header.dof));
-        //logToConsole("Channel: " + std::to_string(data.header.channel));
+        // Pre-allocate amplitude vector to avoid repeated reallocations
+        int expected_samples = (data.header.dof == 4)
+            ? (data.header.count - sub_header_size_) / 2
+            : (data.header.count - sub_header_size_);
+        data.amps.reserve(expected_samples);
 
         // 8 Bit Mode
         if (data.header.dof == 1) {
-        //if (dof_ == 1) {
             for (int i = sub_header_size_; i < data.header.count; i++) {
-                data.amps.push_back((short int)packet[i]);
+                data.amps.push_back( (int32_t)packet[i] - 128 );
             }
-
-        // TODO: Implememnt DOF 2, 3, 5 & 6
 
         // 16 Bit Mode
         } else if (data.header.dof == 4) {
-        //} else if (dof_ == 4) {
             int i = sub_header_size_;
             while (i < data.header.count) {
-                // TODO: Confirm the byte order here
-                data.amps.push_back((short int)(packet[i+1] << 8 | packet[i]));
+                data.amps.push_back( (int32_t)(packet[i+1] << 8 | packet[i]) - 32768 );
                 i = i+2;
             }
+        } else {
+        // TODO: Implememnt DOF 2, 3, 5 & 6
+            errorToConsole("ERROR - Unkown DOF packet sub-header byte: " + std::to_string( data.header.dof ));
         }
 
-    } else if (packet.front() == 28) {
+    } else if (packet[0] == 28) {
         logToConsole("Normal indications returned");
         data.header.header = normal_indications;
         // TODO: Implement normal indications
 
-    } else if (packet.front() == 29) {
+    } else if (packet[0] == 29) {
         logToConsole("Gain reduced indications returned");
         data.header.header = gain_reduced_indications;
         // TODO: Implement gain reduced indications
 
-    } else if (packet.front() == 30) {
+    } else if (packet[0] == 30) {
         logToConsole("LWL coupling failure returned");
         data.header.header = lwl_coupling_failure;
         // TODO: Implement LWL (coupling failure)
 
-    } else if (packet.front() == 6) {
+    } else if (packet[0] == 6) {
         errorToConsole("ERROR - LTPA error message returned");
         data.header.header = error;
         // TODO: Implement better error message return handling
 
     } else {
-        errorToConsole("ERROR - Unkown DOF packet sub-header byte: "+ std::to_string((int)packet.front()));
+        errorToConsole("ERROR - Unkown DOF packet sub-header byte: " + std::to_string((int)packet[0]));
         // TODO: Subheader processing to separate method
         data.header.header =        error;
         data.header.count =         (int)((packet[3] << 16) | (packet[2] << 8) | packet[1]);
         data.header.testNo =        (int)(packet[5] << 8 | packet[4]);
         data.header.dof =           (int)packet[6];
         data.header.channel =       (int)packet[7];
-        //data.amps.clear();
     }
 
     return data;
 }
 
 
-bool PeakHandler::sendDataRequest() {
-    bool valid = false;
+PeakHandler::DofMessage PeakHandler::dataOutpoutFormatReader(const std::vector<unsigned char>& packet) {
+    return dataOutpoutFormatReader(packet.data(), packet.size());
+}
 
-    // TODO: Get a handle on the behavior of these different commands and what is best for streaming and single measurements
-    sendCommand("CALS 1");
-    //sendCommand("STR 1");
-    //sendCommand("STP 1");
-    //sendCommand("CALS 0");
-    //sendCommand("STR 0");
-    //sendCommand("STP 0");
 
-    std::vector<unsigned char> response = ltpa_client_.receive(packet_length_);
-    //std::vector<unsigned char> response = ltpa_client_.receive(packet_length_ + 200);
-    //std::vector<unsigned char> response = ltpa_client_.receive(179436);
-
+bool PeakHandler::parseResponse(const std::vector<unsigned char>& response, OutputFormat& output) {
     int ascan_count = 0;
     int curr_ascan_i = 0;
-    std::vector<DofMessage> data(num_a_scans_);
-    data.clear();
+
+    int32_t data_max_amp = 0;
+
+    std::vector<DofMessage> data;
     data.reserve(num_a_scans_);
 
     while (curr_ascan_i < packet_length_) {
-        //logToConsole("Current a-scan start index: " + std::to_string(curr_ascan_i));
-
-        std::vector<unsigned char> ascan_bytes(
-            &response[curr_ascan_i],
-            &response[curr_ascan_i + individual_ascan_obs_length_]
-            );
-
-        DofMessage message = dataOutpoutFormatReader(ascan_bytes);
+        DofMessage message = dataOutpoutFormatReader(
+            &response[curr_ascan_i], individual_ascan_obs_length_);
 
         if (message.header.header == ascan) {
-            // TODO: Consider separate ascan validation method to hold all this logic
+            // DoF Validation
             if (message.header.dof != dof_) {
                 errorToConsole(
-                    "ERROR - Returned DOF [" + 
-                    std::to_string(message.header.dof) + 
-                    "] does not match MPS file [" + 
-                    std::to_string(dof_) + 
+                    "ERROR - Returned DOF [" +
+                    std::to_string(message.header.dof) +
+                    "] does not match MPS file [" +
+                    std::to_string(dof_) +
                     "]"
                     );
-
                 break;
-
+            // Packet Length Validation
             } else if (message.header.count != individual_ascan_obs_length_) {
                 errorToConsole(
-                    "ERROR - Returned A-Scan length [" + 
-                    std::to_string(message.header.count) + 
-                    "] does not match MPS file [" + 
-                    std::to_string(individual_ascan_obs_length_) + 
+                    "ERROR - Returned A-Scan length [" +
+                    std::to_string(message.header.count) +
+                    "] does not match MPS file [" +
+                    std::to_string(individual_ascan_obs_length_) +
                     "]"
                     );
-
                 break;
-            }
 
-            data.push_back(message);
-            ++ascan_count;
-            //ascan_count++;
+            // We have a good packet
+            } else {
+                int32_t curr_ascan_min_amp = *std::min_element(message.amps.begin(), message.amps.end());
+                int32_t curr_ascan_max_amp = *std::max_element(message.amps.begin(), message.amps.end());
+
+                if (abs(curr_ascan_min_amp) > abs(curr_ascan_max_amp)) {
+                        curr_ascan_max_amp = abs(curr_ascan_min_amp);
+                    } else {
+                        curr_ascan_max_amp = abs(curr_ascan_max_amp);
+                    }
+
+                if (data_max_amp < curr_ascan_max_amp) {
+                    data_max_amp = curr_ascan_max_amp;
+                }
+
+                data.emplace_back(std::move(message));
+                ++ascan_count;
+            }
 
         } else {
             errorToConsole("ERROR - Returned data message not an A Scan");
@@ -413,15 +418,182 @@ bool PeakHandler::sendDataRequest() {
     logToConsole(std::to_string(ascan_count) + " A-Scans Received");
 
     if (ascan_count == num_a_scans_) {
-    //if (ascan_count == 113) {
-        ltpa_data_.ascans.clear();
-        //ltpa_data_.ascans.reserve(num_a_scans_);
-        ltpa_data_.ascans = data;
-
-        valid = true;
+        output.ascans = std::move(data);
+        output.max_amplitude = data_max_amp;
+        return true;
     } else {
         errorToConsole("Incorrect amount of A-Scans returned");
+        return false;
+    }
+}
+
+
+bool PeakHandler::sendDataRequest() {
+    // TODO: Get a handle on the behavior of these different commands
+    //       and which is best for streaming and single measurements
+    sendCommand("CALS 1");
+
+    auto begin = std::chrono::high_resolution_clock::now();
+    std::vector<unsigned char> response = ltpa_client_.receive(packet_length_);
+    auto end = std::chrono::high_resolution_clock::now();
+    std::cout << "\033[32m";
+    std::cout << "Profiling [ltpa_client_.receive(packet_length_)] --- " << std::chrono::duration_cast<std::chrono::microseconds>(end-begin).count() << " us" << std::endl;
+    std::cout << "\033[0m";
+
+    return parseResponse(response, ltpa_data_);
+}
+
+
+void PeakHandler::startAsyncAcquisition(DataReadyCallback on_data_ready,
+                                          int acquisition_rate_hz) {
+    if (acquiring_) {
+        return;
+    }
+    // Copy static fields from ltpa_data_ into ready_buffer_ so consumers
+    // see configuration values (digitisation_rate, geometry, etc.)
+    {
+        std::lock_guard<std::mutex> lock(data_mutex_);
+        ready_buffer_ = ltpa_data_;
+    }
+    data_ready_cb_ = on_data_ready;
+    data_ready_ = false;
+    acquiring_ = true;
+    send_loop_active_ = true;
+
+    // Calculate CALS period from acquisition rate (default 20 Hz if not specified)
+    if (acquisition_rate_hz > 0) {
+        cals_period_ = std::chrono::milliseconds(1000 / acquisition_rate_hz);
+    } else {
+        cals_period_ = std::chrono::milliseconds(50);  // Default 20 Hz
     }
 
-    return valid;
+    uint64_t gen = ++async_generation_;
+    ltpa_client_.startIoThread();
+
+    // Create the timer on the io_context
+    cals_timer_ = std::make_unique<boost::asio::steady_timer>(
+        ltpa_client_.socket_.get_executor());
+
+    // Post to io thread so all socket I/O is single-threaded
+    // Start both the receive loop and the CALS send timer
+    boost::asio::post(ltpa_client_.socket_.get_executor(), [this, gen]() {
+        if (gen == async_generation_.load() && acquiring_) {
+            initiateAsyncReceive(gen);  // Always listening for responses
+            scheduleCalsTimer(gen);     // Sends CALS at fixed rate
+        }
+    });
+}
+
+
+void PeakHandler::stopAsyncAcquisition() {
+    acquiring_ = false;
+    send_loop_active_ = false;
+
+    // Don't call cals_timer_->cancel() here - it's not thread-safe.
+    // io_context::stop() in stopIoThread() will cancel all pending async ops.
+
+    ltpa_client_.stopIoThread();       // io_context::stop() is thread-safe, then joins
+    // After join, io thread is done. Single-threaded from here.
+    if (ltpa_client_.socket_.is_open()) {
+        boost::system::error_code ec;
+        ltpa_client_.socket_.cancel(ec);  // cancel pending async ops (safe: no io thread)
+        ltpa_client_.drainSocket();
+    }
+
+    // Reset timer after cleanup (single-threaded now)
+    cals_timer_.reset();
+}
+
+
+bool PeakHandler::getLatestData(OutputFormat& out) {
+    if (!data_ready_) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(data_mutex_);
+    if (!data_ready_) {
+        return false;  // consumed by another thread
+    }
+    out = std::move(ready_buffer_);
+    data_ready_ = false;
+    return true;
+}
+
+
+void PeakHandler::initiateAsyncReceive(uint64_t gen) {
+    auto begin = std::chrono::high_resolution_clock::now();
+
+    ltpa_client_.asyncReceiveZeroCopy(
+        packet_length_,
+        [this, gen](const std::vector<unsigned char>& data, boost::system::error_code ec) {
+            onReceiveComplete(data, ec, gen);
+        });
+    auto end = std::chrono::high_resolution_clock::now();
+    std::cout << "\033[32m";
+    std::cout << "Profiling [ltpa_client_..asyncReceiveZeroCopy(packet_length_, ...)] --- " << std::chrono::duration_cast<std::chrono::microseconds>(end-begin).count() << " us" << std::endl;
+    std::cout << "\033[0m";
+
+}
+
+
+void PeakHandler::scheduleCalsTimer(uint64_t gen) {
+    if (!send_loop_active_ || gen != async_generation_.load()) return;
+
+    sendCommand("CALS 1");
+
+    cals_timer_->expires_after(cals_period_);
+    cals_timer_->async_wait([this, gen](boost::system::error_code ec) {
+        if (ec) return;  // Timer cancelled or error
+        scheduleCalsTimer(gen);
+    });
+}
+
+
+void PeakHandler::onReceiveComplete(const std::vector<unsigned char>& data,
+                                     boost::system::error_code ec,
+                                     uint64_t gen) {
+    if (gen != async_generation_.load()) return;  // stale callback
+
+    if (ec) {
+        // Clean shutdown - don't log or retry on operation_aborted
+        if (ec == boost::asio::error::operation_aborted) {
+            return;
+        }
+        errorToConsole("Async receive error: " + ec.message());
+        if (acquiring_) {
+            initiateAsyncReceive(gen);
+        }
+        return;
+    }
+
+    // Copy only scalar config fields — avoids copying vectors from ltpa_data_
+    OutputFormat parsed;
+    parsed.digitisation_rate     = ltpa_data_.digitisation_rate;
+    parsed.ascan_length          = ltpa_data_.ascan_length;
+    parsed.num_a_scans           = ltpa_data_.num_a_scans;
+    parsed.n_elements            = ltpa_data_.n_elements;
+    parsed.element_pitch         = ltpa_data_.element_pitch;
+    parsed.inter_element_spacing = ltpa_data_.inter_element_spacing;
+    parsed.element_width         = ltpa_data_.element_width;
+    parsed.vel_wedge             = ltpa_data_.vel_wedge;
+    parsed.vel_couplant          = ltpa_data_.vel_couplant;
+    parsed.vel_material          = ltpa_data_.vel_material;
+    parsed.wedge_angle           = ltpa_data_.wedge_angle;
+    parsed.wedge_depth           = ltpa_data_.wedge_depth;
+    parsed.couplant_depth        = ltpa_data_.couplant_depth;
+    parsed.specimen_depth        = ltpa_data_.specimen_depth;
+    bool valid = parseResponse(data, parsed);
+
+    {
+        std::lock_guard<std::mutex> lock(data_mutex_);
+        ready_buffer_ = std::move(parsed);
+        data_ready_ = true;
+    }
+
+    if (data_ready_cb_) {
+        data_ready_cb_(valid);
+    }
+
+    if (acquiring_) {
+        initiateAsyncReceive(gen);
+    }
 }

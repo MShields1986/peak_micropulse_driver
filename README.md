@@ -15,7 +15,8 @@ If you use this repository for your research, please cite the following conferen
         url = "https://www.bindt.org/events-and-awards/ndt-2025/",
     }
 
-# Including in an External Project
+## Usage
+### Including in an External Project
 Use the inclusions below to have CMake fetch and build the library for you.
 ```cmake
 include(FetchContent)
@@ -32,7 +33,7 @@ Then link against your intended compilation target.
 target_link_libraries(${TARGET_NAME} PeakMicroPulseHandler)
 ```
 
-# Usage
+### Stand Alone Usage
 See the example, [standalone.cpp](https://github.com/MShields1986/peak_micropulse_driver/blob/main/examples/standalone.cpp), which can be compiled using...
 ```bash
 cmake -DBUILD_PeakMicroPulse_EXAMPLES:BOOL=ON -S . -B build/
@@ -52,7 +53,9 @@ The implementation within the example is as follows and provides a template for 
 auto main(int argc, char** argv) -> int
 {
     
-    PeakHandler peak_handler(
+    PeakHandler peak_handler;
+
+    peak_handler.setup(
         10,                                // Frequency -- Currently not used!
         "10.1.1.2",                        // IP address
         1067,                              // Port
@@ -99,7 +102,7 @@ Data is output as a OutputFormat struct, which is defined in [peak_handler.h](ht
 
     struct DofMessage {
         DofMessageHeader               header;
-        std::vector<short int>         amps;
+        std::vector<int32_t>           amps;
     };
 
     struct OutputFormat {
@@ -118,7 +121,50 @@ Data is output as a OutputFormat struct, which is defined in [peak_handler.h](ht
         double                         couplant_depth;        // mm
         double                         specimen_depth;        // mm
         std::vector<DofMessage>        ascans;
+        int32_t                        max_amplitude;
     };
+```
+
+### Async Acquisition
+The driver supports asynchronous, non-blocking data acquisition for real-time streaming. All socket I/O runs on a dedicated io thread to avoid data races.
+
+```cpp
+// Start continuous async acquisition
+peak_handler.startAsyncAcquisition([](bool valid) {
+    // Optional callback invoked on each received frame
+});
+
+// Poll for the latest data from any thread
+PeakHandler::OutputFormat out;
+if (peak_handler.getLatestData(out)) {
+    // process out.ascans ...
+}
+
+// Stop acquisition (thread-safe, blocks until io thread joins)
+peak_handler.stopAsyncAcquisition();
+```
+
+## Tests
+Unit tests and stress/integration tests use [Google Test](https://github.com/google/googletest) and have no ROS dependency. A mock hardware server (`MockPeakHardware`) is used for integration testing without physical hardware.
+
+```bash
+cmake -DBUILD_PeakMicroPulse_TESTS=ON -S . -B build/
+cmake --build build/
+ctest --test-dir build/ --output-on-failure
+```
+
+### Sanitiser Builds
+AddressSanitiser and ThreadSanitiser can be enabled for additional checks:
+```bash
+# AddressSanitiser
+cmake -DBUILD_PeakMicroPulse_TESTS=ON -DENABLE_ASAN=ON -S . -B build_asan/
+cmake --build build_asan/
+ctest --test-dir build_asan/ -E '(Memcheck|Helgrind)' --output-on-failure
+
+# ThreadSanitiser
+cmake -DBUILD_PeakMicroPulse_TESTS=ON -DENABLE_TSAN=ON -S . -B build_tsan/
+cmake --build build_tsan/
+ctest --test-dir build_tsan/ -E '(Memcheck|Helgrind)' --output-on-failure
 ```
 
 ## Bugs and Feature Requests

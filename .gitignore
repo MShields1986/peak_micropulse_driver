@@ -31,5 +31,6 @@
 *.out
 *.app
 
-# Build artifiacts
+# Build artifacts
 build/
+build_*/
