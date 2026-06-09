@@ -1,6 +1,20 @@
 # peak_micropulse_driver
 A C++ driver to handle external control of the Peak MicroPulse hardware range over TCP.
 
+## Citation
+If you use this repository for your research, please cite the following conference where it was first shared.
+
+    @conference{shields2025bindt,
+        title = "Process-to-part phased array inspection of a large scale composite aerospace specimen",
+        keywords = "non-destructive testing, robotic NDT, process-to-part, array inspection", author = "Matthew Shields and \{Wathavana Vithanage\}, \{Randika Kosala\} and Gareth Pierce and Gavin Munro and Tom O'Hare and Michael Grosser and Janet O'Brien-O'Reilly",
+        year = "2025",
+        month = sep,
+        day = "10",
+        note = "62nd Annual British Conference on NDT, NDT 2025 ;
+        Conference date: 09-09-2025 Through 11-09-2025",
+        url = "https://www.bindt.org/events-and-awards/ndt-2025/",
+    }
+
 # Including in an External Project
 Use the inclusions below to have CMake fetch and build the library for you.
 ```cmake
